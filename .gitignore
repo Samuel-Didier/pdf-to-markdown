@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# PHP
+vendor/
+
+# Environnement et système
+.env
+.DS_Store
+Thumbs.db
+
+# Dossiers de travail (PDF source et résultats)
+inputs/*
+!inputs/.gitkeep
+outputs/*
+!outputs/.gitkeep
