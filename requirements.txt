@@ -2,3 +2,5 @@ pymupdf
 pymupdf4llm
 pdfplumber
 tqdm
+# tests
+pytest
