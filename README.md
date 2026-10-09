@@ -40,7 +40,7 @@ Prérequis : Python 3.9 ou supérieur.
 pip install -r requirements.txt
 ```
 
-Les dépendances sont : `pymupdf`, `pymupdf4llm`, `pdfplumber` et `tqdm`.
+Les dépendances sont : `pymupdf`, `pymupdf4llm`, `pdfplumber` et `tqdm`, plus `pytest` pour les tests.
 
 ## Utilisation
 
@@ -62,7 +62,7 @@ Extraire aussi les images (elles sont enregistrées dans `outputs/images/<nom_pd
 python src/convert.py --images
 ```
 
-Ajouter les tableaux sans bordures détectés par pdfplumber (par exemple les comparatifs « Incorrect / Correct ») en fin de Markdown, dans une section dédiée :
+Complèter les pages sans tableau Markdown avec les tableaux sans bordures détectés par pdfplumber (par exemple les comparatifs « Incorrect / Correct ») :
 
 ```bash
 python src/convert.py --tableaux-pdfplumber
@@ -80,18 +80,20 @@ Le script affiche un journal dans la console et retourne le code 1 si au moins u
 
 ## Traitements appliqués
 
-- **En-têtes et pieds de page répétitifs** : les lignes situées dans la bande haute ou basse de la page et répétées sur au moins 40 % des pages (au minimum 3) sont retirées du Markdown et du texte. Les chiffres sont ignorés pour la comparaison, donc « Page 3 / 41 » et « Page 12 / 41 » sont reconnus comme le même motif. Les lignes de tableau ne sont jamais retirées.
-- **Coupures de mots** : un trait d'union en fin de ligne entre deux lettres minuscules est recollé (« grammai-⏎re » devient « grammaire »).
+- **En-têtes et pieds de page répétitifs** : les lignes situées dans la bande haute ou basse (8 % de la hauteur) de la page et répétées sur au moins 40 % des pages (minimum 3) sont retirées du Markdown et du texte. Les chiffres sont ignorés pour la comparaison, donc « Page 3 / 41 » et « Page 12 / 41 » sont reconnus comme le même motif. Les lignes de tableau ne sont jamais retirées. Les lignes courtes seulement (120 caractères au maximum) sont concernées.
+- **Coupures de mots** : un trait d'union en fin de ligne entre deux lettres est recollé (« grammai-⏎re » devient « grammaire »). Les mots composés ne sont pas recollés : le trait d'union est conservé si la forme avec trait d'union apparaît ailleurs dans le document (« porte-monnaie »), si le mot figure dans une petite liste de mots composés courants (« peut-être », « au-dessus »...), ou si le second élément est un suffixe pronominal (« celui-ci », « lui-même »).
+- **Coupures entre deux pages** : si une page se termine par un trait d'union et que la suivante commence par une minuscule, la césure est recollée de la même façon.
 - **Ligatures et espaces** : les ligatures (ﬁ, ﬂ...) sont décomposées et les espaces insécables sont remplacées par des espaces simples.
+- **Tableaux pdfplumber (option)** : une page reçoit le tableau pdfplumber seulement si pymupdf4llm n'a produit aucun tableau sur cette page. Le tableau est ajouté en fin de cette page. Un tableau déjà rendu n'est donc jamais dupliqué, mais une table mal formée rendue par pymupdf4llm n'est pas remplacée.
 
-Limite connue : la coupure de mot entre deux pages n'est pas recollée, et un mot composé coupé en fin de ligne (« peut-⏎être ») est aussi recollé à tort ; à relire sur les documents concernés.
+Limites connues : une liste de mots composés est forcément incomplète ; un mot composé rare coupé en fin de ligne sans être présent ailleurs dans le document sera recollé à tort. Un titre court répété en marge sur au moins 40 % des pages est retiré comme en-tête. À relire sur les documents concernés.
 
 ## Validation
 
 Le script `tests/validate_output.py` contrôle les paires `.md` / `.txt` d'un dossier (`outputs/` par défaut) :
 
 - sorties non vides et au moins 50 mots ;
-- aucune ligue non normalisée ni espace insécable restante ;
+- aucune ligature non normalisée ni espace insécable restante ;
 - aucune ligne hors tableau répétée plus de 20 fois (en-tête ou pied de page non filtré) ;
 - avertissements pour les coupures de mot restantes et l'absence de titre ou de tableau Markdown.
 
@@ -104,6 +106,8 @@ Tests unitaires :
 
 ```bash
 python -m unittest discover tests
+# ou
+pytest tests
 ```
 
 ## Statut
