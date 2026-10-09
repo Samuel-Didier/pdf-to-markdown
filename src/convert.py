@@ -5,7 +5,7 @@ Utilisation :
     python src/convert.py                        # convertit tous les PDF de inputs/
     python src/convert.py chemin/doc.pdf         # convertit un seul fichier
     python src/convert.py --images               # extrait aussi les images et les lie dans le Markdown
-    python src/convert.py --tableaux-pdfplumber  # ajoute les tableaux détectés par pdfplumber
+    python src/convert.py --tableaux-pdfplumber  # complète les pages sans tableau Markdown avec les tableaux pdfplumber
     python src/convert.py --validate             # contrôle les sorties après conversion
 
 Sorties (dans outputs/) :
@@ -42,6 +42,37 @@ ZONE_MARGE = 0.08
 REPETITION_MIN_PAGES = 3
 REPETITION_RATIO = 0.4
 
+LETTRES = "A-Za-zÀ-ÖØ-öø-ÿŒœÆæ"
+TABLEAU = re.compile(r"^\|.*\|\s*$", re.MULTILINE)
+
+# Suffixes pronominaux et démonstratifs : « celui-ci », « lui-même », « est-ce »...
+# Un trait d'union devant ces mots fait partie du mot composé et n'est jamais une césure.
+SUFFIXES_COMPOSES = frozenset(
+    {"ci", "là", "même", "mêmes", "ce", "ils", "elle", "elles", "moi", "toi", "lui", "eux", "nous", "vous", "je", "tu"}
+)
+# Mots composés courants (forme avec trait d'union). Utilisé quand le mot n'apparaît pas ailleurs
+# dans le document sous forme non coupée.
+MOTS_COMPOSES_CONNUS = frozenset(
+    {
+        "peut-être",
+        "est-ce",
+        "au-dessus",
+        "au-dessous",
+        "au-delà",
+        "par-dessus",
+        "par-delà",
+        "en-dessous",
+        "là-bas",
+        "sous-sol",
+        "sous-marin",
+        "non-sens",
+        "quelque-chose",
+        "bien-être",
+        "grand-mère",
+        "grand-père",
+    }
+)
+
 logger = logging.getLogger("convert")
 
 
@@ -72,20 +103,63 @@ def valider_pdf(chemin: Path) -> Path:
 # Normalisation du texte
 # ---------------------------------------------------------------------------
 
-def corriger_texte(texte: str) -> str:
-    """Nettoie le texte extrait : ligatures, espaces insécables, coupures de mots.
-
-    - ligatures (ﬁ, ﬂ, ﬀ...) et autres formes compatibles -> NFKC (ex. ﬁ -> fi) ;
-    - espaces insécables (U+00A0, U+202F, U+2007) -> espace simple ;
-    - traits d'union de fin de ligne entre deux lettres minuscules : "grammai-\nre" -> "grammaire" ;
-    - espaces en fin de ligne supprimés.
-    """
+def normaliser_unicode(texte: str) -> str:
+    """Ligatures (NFKC : ﬁ -> fi), espaces insécables -> espace simple, espaces de fin de ligne retirées."""
     texte = unicodedata.normalize("NFKC", texte)
-    texte = texte.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2007", " ")
+    for espace in ("\u00a0", "\u202f", "\u2007"):
+        texte = texte.replace(espace, " ")
     texte = texte.replace("\u00ad", "")  # trait d'union conditionnel invisible
-    texte = re.sub(r"([a-zà-ÿœæ])-\n([a-zà-ÿœæ])", r"\1\2", texte)
-    texte = re.sub(r"[ \t]+\n", "\n", texte)
-    return texte
+    return re.sub(r"[ \t]+\n", "\n", texte)
+
+
+def recoller_cesures(texte: str) -> str:
+    """Recolle les mots coupés en fin de ligne par un trait d'union de césure.
+
+    « grammai-⏎re » devient « grammaire ». Un trait d'union qui fait partie d'un mot composé
+    n'est pas une césure et est conservé (« peut-⏎être » devient « peut-être ») lorsque :
+    - la forme avec trait d'union apparaît ailleurs dans le texte sans coupure ;
+    - ou le mot figure dans MOTS_COMPOSES_CONNUS ;
+    - ou le second élément est un suffixe pronominal (« celui-⏎ci », « lui-⏎même »).
+    """
+    formes_presentes = {m.group(0).lower() for m in re.finditer(rf"[{LETTRES}]+-[{LETTRES}]+", texte)}
+
+    def decider(m: re.Match[str]) -> str:
+        gauche, droite = m.group(1), m.group(2)
+        compose = f"{gauche}-{droite}".lower()
+        if compose in formes_presentes or compose in MOTS_COMPOSES_CONNUS or droite.lower() in SUFFIXES_COMPOSES:
+            return f"{gauche}-{droite}"
+        return gauche + droite
+
+    return re.sub(rf"([{LETTRES}]+)-\n([a-zà-ÿœæ]+)", decider, texte)
+
+
+def corriger_texte(texte: str) -> str:
+    """Normalisation Unicode puis recollage des césures."""
+    return recoller_cesures(normaliser_unicode(texte))
+
+
+def joindre_pages(pages: list[str]) -> str:
+    """Assemble les pages en un seul texte.
+
+    Si une page se termine par une césure (« gram- ») et que la suivante commence par une minuscule,
+    les deux pages sont reliées par un simple saut de ligne : la césure est alors recollée par
+    recoller_cesures. Sinon les pages sont séparées par une ligne vide.
+    """
+    morceaux = [page.strip("\n") for page in pages if page.strip()]
+    if not morceaux:
+        return ""
+    resultat = morceaux[0]
+    for suivante in morceaux[1:]:
+        if re.search(rf"[{LETTRES}]-\s*$", resultat) and re.match(r"\s*[a-zà-ÿœæ]", suivante):
+            resultat = resultat.rstrip() + "\n" + suivante.lstrip()
+        else:
+            resultat = resultat.rstrip() + "\n\n" + suivante.lstrip()
+    return resultat
+
+
+def assembler(pages: list[str]) -> str:
+    """Joint les pages puis applique la normalisation complète au document entier."""
+    return corriger_texte(joindre_pages(pages))
 
 
 def normaliser_motif(ligne: str) -> str:
@@ -152,13 +226,13 @@ def retirer_motifs(texte: str, motifs: set[str]) -> str:
 # Extraction
 # ---------------------------------------------------------------------------
 
-def extraire_markdown(
+def extraire_pages_markdown(
     doc: pymupdf.Document,
     nom: str,
     dossier_images: Path | None,
     motifs: set[str],
-) -> str:
-    """Convertit le document en Markdown avec pymupdf4llm, page par page.
+) -> list[str]:
+    """Convertit chaque page en Markdown avec pymupdf4llm, sans en-têtes/pieds répétitifs.
 
     Si dossier_images est fourni, les images sont écrites dans ce dossier et les
     liens Markdown sont rendus relatifs au dossier outputs/ (images/<nom>/...).
@@ -169,20 +243,19 @@ def extraire_markdown(
         options.update(write_images=True, image_path=str(dossier_images), image_format="png", dpi=150)
 
     pages = pymupdf4llm.to_markdown(doc, **options)
-    markdown = "\n\n".join(retirer_motifs(page["text"], motifs) for page in pages)
-
+    textes = [retirer_motifs(page["text"], motifs) for page in pages]
     if dossier_images is not None:
         # Liens relatifs : le .md est dans outputs/, les images dans outputs/images/<nom>/
-        markdown = markdown.replace(dossier_images.as_posix(), f"images/{nom}")
-    return corriger_texte(markdown)
+        textes = [texte.replace(dossier_images.as_posix(), f"images/{nom}") for texte in textes]
+    return textes
 
 
-def extraire_texte_brut(doc: pymupdf.Document, motifs: set[str]) -> str:
+def extraire_pages_texte(doc: pymupdf.Document, motifs: set[str]) -> list[str]:
     """Extrait le texte brut de chaque page, sans en-têtes/pieds répétitifs."""
-    pages = []
-    for page in tqdm(doc, desc="Pages (texte)", unit="page", leave=False):
-        pages.append(retirer_motifs(page.get_text(), motifs))
-    return corriger_texte("\n\n".join(pages))
+    return [
+        retirer_motifs(page.get_text(), motifs)
+        for page in tqdm(doc, desc="Pages (texte)", unit="page", leave=False)
+    ]
 
 
 def normaliser_cellule(valeur: object) -> str:
@@ -202,31 +275,43 @@ def tableau_en_markdown(lignes: list[list[str]]) -> str:
     return "\n".join(rendu)
 
 
-def extraire_tableaux_pdfplumber(pdf: Path) -> str:
-    """Fallback pour les tableaux sans bordures complètes (ex. comparatifs « Incorrect / Correct »).
+def extraire_tableaux_pdfplumber(pdf: Path) -> dict[int, str]:
+    """Tableaux sans bordures complètes (ex. comparatifs « Incorrect / Correct »), par numéro de page.
 
-    Utilise la stratégie « text » de pdfplumber (alignement des colonnes) et retourne
-    les tableaux en Markdown, précédés d'un commentaire indiquant la page d'origine.
+    Utilise la stratégie « text » de pdfplumber (alignement des colonnes).
     """
     import pdfplumber  # import local : dépendance utilisée seulement avec --tableaux-pdfplumber
 
-    blocs: list[str] = []
+    tableaux_par_page: dict[int, str] = {}
     with pdfplumber.open(pdf) as document:
         for numero, page in enumerate(document.pages, start=1):
-            tableaux = page.extract_tables(
-                {"vertical_strategy": "text", "horizontal_strategy": "text"}
-            )
-            for tableau in tableaux:
+            blocs: list[str] = []
+            for tableau in page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"}):
                 lignes = [
                     [normaliser_cellule(cellule) for cellule in ligne]
                     for ligne in tableau
                     if ligne and any(cellule for cellule in ligne)
                 ]
-                if len(lignes) < 2:
-                    continue
-                blocs.append(f"<!-- tableau page {numero} -->\n" + tableau_en_markdown(lignes))
-    logger.debug("%d tableau(x) détecté(s) par pdfplumber dans %s", len(blocs), pdf.name)
-    return "\n\n".join(blocs)
+                if len(lignes) >= 2:
+                    blocs.append(tableau_en_markdown(lignes))
+            if blocs:
+                tableaux_par_page[numero] = "\n\n".join(blocs)
+    logger.debug("tableaux pdfplumber détectés sur %d page(s) de %s", len(tableaux_par_page), pdf.name)
+    return tableaux_par_page
+
+
+def ajouter_tableaux_manquants(pages_md: list[str], tableaux: dict[int, str]) -> list[str]:
+    """Ajoute le tableau pdfplumber d'une page uniquement si pymupdf4llm n'a produit aucun tableau sur cette page.
+
+    Ainsi, un tableau déjà correctement rendu n'est jamais dupliqué. Le tableau ajouté est placé
+    en fin de la page concernée (et non en fin de document).
+    """
+    resultat = list(pages_md)
+    for numero, tableau in tableaux.items():
+        indice = numero - 1
+        if 0 <= indice < len(resultat) and not TABLEAU.search(resultat[indice]):
+            resultat[indice] = resultat[indice].rstrip() + "\n\n" + tableau + "\n"
+    return resultat
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +339,26 @@ def convertir_pdf(
         logger.debug("%d page(s) détectée(s) dans %s", doc.page_count, pdf.name)
 
         motifs = detecter_motifs_repetitifs(doc)
-        markdown = extraire_markdown(doc, nom, dossier_images, motifs)
-        texte = extraire_texte_brut(doc, motifs)
+        pages_md = extraire_pages_markdown(doc, nom, dossier_images, motifs)
+        pages_txt = extraire_pages_texte(doc, motifs)
+        nb_pages = doc.page_count
 
     if tableaux_pdfplumber:
         tableaux = extraire_tableaux_pdfplumber(pdf)
-        if tableaux:
-            markdown += "\n\n## Tableaux extraits (pdfplumber)\n\n" + tableaux + "\n"
+        if len(pages_md) == nb_pages:
+            pages_md = ajouter_tableaux_manquants(pages_md, tableaux)
+        else:
+            logger.warning(
+                "%s : %d page(s) Markdown pour %d page(s) PDF, fallback pdfplumber ignoré",
+                pdf.name,
+                len(pages_md),
+                nb_pages,
+            )
+
+    markdown = assembler(pages_md)
+    if dossier_images is not None:
+        markdown = markdown  # liens déjà relatifs (remplacement fait page par page)
+    texte = assembler(pages_txt)
 
     chemin_md.write_text(markdown, encoding="utf-8")
     chemin_txt.write_text(texte, encoding="utf-8")
@@ -280,7 +378,7 @@ def analyser_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tableaux-pdfplumber",
         action="store_true",
-        help="Ajoute en fin de Markdown les tableaux détectés par pdfplumber (sans bordures)",
+        help="Complète les pages sans tableau Markdown avec les tableaux détectés par pdfplumber",
     )
     parser.add_argument("--validate", action="store_true", help="Contrôle les .md/.txt produits après conversion")
     parser.add_argument("-v", "--verbose", action="store_true", help="Affiche les logs de débogage")
