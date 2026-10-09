@@ -15,7 +15,9 @@ Placer un PDF dans le dossier `inputs/`, lancer la conversion, et récupérer da
 pdf-to-markdown/
 ├── inputs/          # PDF à convertir (non versionnés)
 ├── outputs/         # Fichiers .md et .txt générés (non versionnés)
-├── src/             # Code de conversion
+├── src/
+│   └── convert.py   # Script de conversion PDF -> Markdown / texte brut
+├── requirements.txt # Dépendances Python
 ├── README.md
 └── .gitignore
 ```
@@ -28,7 +30,37 @@ pdf-to-markdown/
 
 ## Installation
 
-À compléter selon la stack retenue (Python, Node.js ou PHP).
+Prérequis : Python 3.9 ou supérieur.
+
+```bash
+pip install -r requirements.txt
+```
+
+Les dépendances sont : `pymupdf`, `pymupdf4llm` et `tqdm`.
+
+## Utilisation
+
+Convertir tous les PDF présents dans `inputs/` :
+
+```bash
+python src/convert.py
+```
+
+Convertir un seul fichier :
+
+```bash
+python src/convert.py chemin/vers/document.pdf
+```
+
+Extraire aussi les images (elles sont enregistrées dans `outputs/images/<nom_pdf>/` et liées dans le Markdown) :
+
+```bash
+python src/convert.py --images
+```
+
+Autres options : `--input-dir` (dossier source), `--output-dir` (dossier de sortie) et `-v` / `--verbose` (logs de débogage).
+
+Le script affiche un journal dans la console et retourne le code 1 si au moins un fichier n'a pas pu être converti.
 
 ## Statut
 
